@@ -27,9 +27,11 @@ from typing import Optional
 try:
     from . import guap_client as gc
     from . import auth as guap_auth
+    from . import session_cookies
 except ImportError:
     import guap_client as gc
     import auth as guap_auth
+    import session_cookies
 
 
 def output_json(data):
@@ -56,11 +58,11 @@ def output_csv(data, headers, rows):
     print(output.getvalue())
 
 
-def get_cookie() -> str:
+def get_cookie():
     """Get cookie from file or raise error."""
     # Try auth module first
-    cookie = guap_auth.get_saved_cookie()
-    if cookie:
+    cookie = session_cookies.configured()
+    if cookie and cookie.cookies.jar:
         return cookie
     
     raise RuntimeError(

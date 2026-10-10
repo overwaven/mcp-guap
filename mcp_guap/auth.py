@@ -4,11 +4,16 @@
 This module provides browser automation to get session cookies from pro.guap.ru.
 """
 
-import json
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 from playwright.async_api import async_playwright
+
+try:
+    from . import session_cookies
+except ImportError:
+    import session_cookies
 
 GUAP_URL = "https://pro.guap.ru"
 SSO_AUTH_URL = "https://sso.guap.ru/realms/master/protocol/openid-connect/auth"
@@ -68,7 +73,7 @@ async def authenticate_with_browser(
         headless: Run browser in headless mode (not recommended for auth)
     
     Returns:
-        dict with 'success', 'cookies', 'cookie_string', 'save_path'
+        dict with 'success', 'cookies', 'save_path'
     """
     if save_path is None:
         save_path = Path(__file__).parent / "cookie.json"
@@ -132,40 +137,25 @@ async def authenticate_with_browser(
         cookies = await context.cookies()
         
         # Фильтруем только guap cookies
-        guap_cookies = [
-            c for c in cookies 
-            if "guap.ru" in c.get("domain", "")
-        ]
+        guap_cookies = [c for c in cookies if session_cookies._allowed(c.get("domain", ""))]
         
         if not guap_cookies:
             await browser.close()
             return {
                 "success": False,
                 "error": "No cookies found for guap.ru domain",
-                "all_cookies": cookies,
             }
         
-        # Формируем cookie string для HTTP заголовка
-        cookie_parts = []
-        for c in guap_cookies:
-            cookie_parts.append(f"{c['name']}={c['value']}")
-        cookie_string = "; ".join(cookie_parts)
-        
-        # Сохраняем в JSON
-        cookie_data = {
-            "url": GUAP_URL,
-            "cookies": guap_cookies,
-            "cookie_string": cookie_string,
-            "domain": ".guap.ru",
-        }
-        
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(json.dumps(cookie_data, indent=2, ensure_ascii=False))
+        # Preserve domain, path and expiry for subsequent GUAP and SSO requests.
+        import httpx
+        session = session_cookies.SessionCookies(httpx.Cookies(), save_path)
+        for record in guap_cookies:
+            session.cookies.jar.set_cookie(session_cookies._cookie(record))
+        session.save(session.cookies)
         
         print(f"\n🍪 Сохранено {len(guap_cookies)} cookies:")
         for c in guap_cookies:
-            value_preview = c['value'][:50] + "..." if len(c['value']) > 50 else c['value']
-            print(f"   {c['name']}: {value_preview}")
+            print(f"   {c['name']}")
         
         print(f"\n💾 Cookies сохранены в: {save_path}")
         
@@ -174,39 +164,18 @@ async def authenticate_with_browser(
         return {
             "success": True,
             "cookies": guap_cookies,
-            "cookie_string": cookie_string,
             "save_path": str(save_path),
         }
 
 
 def get_saved_cookie(cookie_file: Optional[Path] = None) -> Optional[str]:
-    """Get cookie string from saved file.
-    
-    Args:
-        cookie_file: Path to cookie.json file
-    
-    Returns:
-        Cookie string or None if file doesn't exist
-    """
-    if cookie_file is None:
-        # Пробуем разные пути
-        for path in [
-            Path(__file__).parent / "cookie.json",
-            Path(__file__).parent.parent / "cookie.json",
-        ]:
-            if path.exists():
-                cookie_file = path
-                break
-    
-    if not cookie_file or not cookie_file.exists():
+    """Legacy helper: return only cookies applicable to the GUAP profile URL."""
+    session = session_cookies.load(cookie_file)
+    if session is None:
         return None
-    
-    try:
-        data = json.loads(cookie_file.read_text())
-        return data.get("cookie_string")
-    except (json.JSONDecodeError, KeyError):
-        # Если файл не JSON, пробуем прочитать как обычный cookie.txt
-        return cookie_file.read_text().strip()
+    import httpx
+    with httpx.Client(cookies=session.cookies) as client:
+        return client.build_request("GET", GUAP_URL + "/inside/profile").headers.get("Cookie")
 
 
 async def check_auth(cookie_string: Optional[str] = None) -> dict:
@@ -220,23 +189,22 @@ async def check_auth(cookie_string: Optional[str] = None) -> dict:
     """
     import httpx
     
-    if cookie_string is None:
-        cookie_string = get_saved_cookie()
-    
-    if not cookie_string:
+    session = session_cookies.from_header(cookie_string) if cookie_string is not None else session_cookies.configured()
+    if session is None or not session.cookies.jar:
         return {"valid": False, "error": "No cookies provided or found"}
     
     try:
         async with httpx.AsyncClient(
             base_url=GUAP_URL,
-            headers={
-                "Cookie": cookie_string,
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
+            cookies=session.cookies,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
             follow_redirects=True,
             timeout=30,
         ) as client:
-            response = await client.get("/inside/profile")
+            try:
+                response = await client.get("/inside/profile")
+            finally:
+                session.save(client.cookies)
             
             # Проверяем что мы получили профиль, а не страницу логина
             if response.status_code == 200 and "login" not in response.text.lower():
@@ -270,8 +238,7 @@ if __name__ == "__main__":
         result = asyncio.run(authenticate_with_browser())
         if result.get("success"):
             print("\n✅ Авторизация успешно завершена!")
-            print(f"\nCookie string (для GUAP_COOKIE):")
-            print(result["cookie_string"])
+            print(f"Cookies saved to: {result['save_path']}")
         else:
             print(f"\n❌ Ошибка: {result.get('error')}")
             sys.exit(1)

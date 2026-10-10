@@ -1,7 +1,6 @@
 """MCP server for GUAP personal cabinet (pro.guap.ru)"""
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -12,9 +11,11 @@ from mcp.types import ErrorData, INTERNAL_ERROR, INVALID_PARAMS
 try:
     from . import guap_client as gc
     from . import auth as guap_auth
+    from . import session_cookies
 except ImportError:
     import guap_client as gc  # type: ignore[no-redef]
     import auth as guap_auth  # type: ignore[no-redef]
+    import session_cookies
 
 mcp = FastMCP("guap", instructions=(
     "This server provides access to the GUAP university personal cabinet at pro.guap.ru. "
@@ -26,20 +27,11 @@ mcp = FastMCP("guap", instructions=(
 # Auth helper
 # ---------------------------------------------------------------------------
 
-def _get_cookie() -> str:
-    """Return the session cookie string from env, config file, or auth module."""
-    # 1. Environment variable
-    cookie = os.environ.get("GUAP_COOKIE", "").strip()
-    if cookie:
-        return cookie
-    
-    # 2. Auth module (cookie.json from browser auth)
-    try:
-        cookie = guap_auth.get_saved_cookie()
-        if cookie:
-            return cookie
-    except Exception:
-        pass
+def _get_cookie() -> session_cookies.SessionCookies:
+    """Return domain-aware cookies from env or the saved browser login."""
+    session = session_cookies.configured()
+    if session and session.cookies.jar:
+        return session
     
     # 3. Legacy cookie.txt file
     for config_path in (
@@ -49,7 +41,7 @@ def _get_cookie() -> str:
         if config_path.exists():
             cookie = config_path.read_text().strip()
             if cookie:
-                return cookie
+                return session_cookies.from_header(cookie)
 
     raise McpError(ErrorData(
         code=INVALID_PARAMS,
