@@ -1,12 +1,18 @@
 """HTTP client and HTML parsers for pro.guap.ru"""
 
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
+
+try:
+    from .session_cookies import SessionCookies, from_header
+except ImportError:
+    from session_cookies import SessionCookies, from_header
 
 BASE_URL = "https://pro.guap.ru"
 
@@ -104,16 +110,21 @@ def _href_id(href: Optional[str], prefix: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _make_client(cookie: str) -> httpx.Client:
-    return httpx.Client(
+@contextmanager
+def _make_client(cookie: str | SessionCookies, transport: httpx.BaseTransport | None = None):
+    session = from_header(cookie) if isinstance(cookie, str) else cookie
+    with httpx.Client(
         base_url=BASE_URL,
-        headers={
-            "Cookie": cookie,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        },
+        cookies=session.cookies,
+        headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
         follow_redirects=True,
         timeout=30,
-    )
+        transport=transport,
+    ) as client:
+        try:
+            yield client
+        finally:
+            session.save(client.cookies)
 
 
 def get_tasks(

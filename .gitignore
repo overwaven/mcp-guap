@@ -11,6 +11,7 @@ wheels/
 
 # Auth — never commit your cookie
 cookie.txt
+cookie.json
 
 # IDE
 .claude/

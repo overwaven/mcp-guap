@@ -26,15 +26,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     import guap_client as gc
     import auth as guap_auth
+    import session_cookies
 except ImportError:
     print(json.dumps({"error": "Failed to import guap modules. Ensure mcp-guap is installed."}))
     sys.exit(1)
 
 
-def get_cookie() -> str:
+def get_cookie():
     """Get authentication cookie."""
-    cookie = guap_auth.get_saved_cookie()
-    if not cookie:
+    cookie = session_cookies.configured()
+    if not cookie or not cookie.cookies.jar:
         raise RuntimeError("Not authenticated. Run 'auth' first.")
     return cookie
 
